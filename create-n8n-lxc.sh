@@ -5,6 +5,9 @@
 # - Robust IP detection (ANSI stripping + IPv4 regex)
 # - Generates N8N_ENCRYPTION_KEY and stores in /opt/n8n/.env + Proxmox Notes
 # - Sets random LXC root password and writes to Notes
+#
+# Fix for "unbound variable" (e.g. N8N_HOST): compose heredoc is literal (<<'EOF')
+# so bash does NOT expand ${VARS} while writing docker-compose.yml.
 
 set -euo pipefail
 : "${SSH_CLIENT:=}"
@@ -138,7 +141,7 @@ pct exec "$CTID" -- bash -lc "
   set -e
   mkdir -p /opt/n8n
 
-  # Compose env
+  # Compose env (used by docker compose)
   cat > /opt/n8n/.env <<EOF
 # n8n (SQLite)
 N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
@@ -147,12 +150,12 @@ N8N_PORT=5678
 N8N_PROTOCOL=http
 WEBHOOK_URL=http://${MDNS_BASE}.local:${HOST_PORT}/
 
-# Image
+# Image + port
 N8N_IMAGE=${N8N_IMAGE}
 HOST_PORT=${HOST_PORT}
 EOF
 
-  # Compose file
+  # Compose file MUST be written literally so bash does not expand \${...}
   cat > /opt/n8n/docker-compose.yml <<'EOF'
 services:
   n8n:
@@ -169,7 +172,7 @@ services:
       N8N_PROTOCOL: ${N8N_PROTOCOL}
       WEBHOOK_URL: ${WEBHOOK_URL}
 
-      # SQLite is default in n8n; we keep it explicit for clarity
+      # SQLite is default in n8n; keep explicit for clarity
       DB_TYPE: sqlite
       DB_SQLITE_VACUUM_ON_STARTUP: "true"
     volumes:
@@ -215,6 +218,7 @@ Docker:
   - docker logs -f n8n
   - docker compose -f /opt/n8n/docker-compose.yml --env-file /opt/n8n/.env pull
   - docker compose -f /opt/n8n/docker-compose.yml --env-file /opt/n8n/.env up -d
+  - docker compose -f /opt/n8n/docker-compose.yml --env-file /opt/n8n/.env restart
 
 Database:
 - SQLite (in Docker volume n8n_data)
