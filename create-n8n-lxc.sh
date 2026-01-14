@@ -6,8 +6,9 @@
 # - Generates N8N_ENCRYPTION_KEY and stores in /opt/n8n/.env + Proxmox Notes
 # - Sets random LXC root password and writes to Notes
 #
-# Fix for "unbound variable" (e.g. N8N_HOST): compose heredoc is literal (<<'EOF')
-# so bash does NOT expand ${VARS} while writing docker-compose.yml.
+# Fix for "N8N_HOST: unbound variable":
+# - docker-compose.yml is written via `pct exec ... bash -s` with a *literal* heredoc
+#   so the Proxmox host shell never expands ${...} placeholders.
 
 set -euo pipefail
 : "${SSH_CLIENT:=}"
@@ -137,11 +138,12 @@ msg_ok "Root password set"
 
 # ---------------- Compose project (n8n + SQLite) ----------------
 msg_info "Creating Docker Compose project (SQLite)"
+
+# 1) Create .env (this part can safely expand host-side variables)
 pct exec "$CTID" -- bash -lc "
   set -e
   mkdir -p /opt/n8n
 
-  # Compose env (used by docker compose)
   cat > /opt/n8n/.env <<EOF
 # n8n (SQLite)
 N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
@@ -154,9 +156,13 @@ WEBHOOK_URL=http://${MDNS_BASE}.local:${HOST_PORT}/
 N8N_IMAGE=${N8N_IMAGE}
 HOST_PORT=${HOST_PORT}
 EOF
+" >/dev/null
 
-  # Compose file MUST be written literally so bash does not expand \${...}
-  cat > /opt/n8n/docker-compose.yml <<'EOF'
+# 2) Create docker-compose.yml WITHOUT any host-side ${...} expansion
+#    (send a literal heredoc into the container via stdin)
+pct exec "$CTID" -- bash -s <<'REMOTE' >/dev/null
+set -e
+cat > /opt/n8n/docker-compose.yml <<'EOF'
 services:
   n8n:
     image: ${N8N_IMAGE}
@@ -181,9 +187,10 @@ services:
 volumes:
   n8n_data:
 EOF
+REMOTE
 
-  docker compose -f /opt/n8n/docker-compose.yml --env-file /opt/n8n/.env up -d
-" >/dev/null
+# 3) Start stack
+pct exec "$CTID" -- bash -lc "docker compose -f /opt/n8n/docker-compose.yml --env-file /opt/n8n/.env up -d" >/dev/null
 msg_ok "n8n started (SQLite)"
 
 # ---------------- IP detection ----------------
