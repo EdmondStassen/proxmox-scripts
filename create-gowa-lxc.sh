@@ -4,16 +4,15 @@
 
 set -euo pipefail
 
-source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
-
-# Clean setting
+# Prevent "unbound variable" errors when running in Proxmox web shell (often no SSH_* env vars)
 : "${SSH_CLIENT:=}"
 : "${SSH_TTY:=}"
 : "${SSH_CONNECTION:=}"
 
+source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
 
 # App metadata for the helper framework
-APP="GOWA (go-whatsapp-web-multidevice)"
+APP="GOWA"
 var_tags="${var_tags:-docker;gowa;whatsapp}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-1024}"
@@ -22,13 +21,12 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-12}"
 var_unprivileged="${var_unprivileged:-1}"
 
-# Network: community build scripts are interactive; for DHCP you can keep defaults.
-# If you want static IP, set it in the advanced settings prompts (or adapt build.func usage).
+# Force a valid DNS hostname (no spaces/parentheses)
+var_hostname="${var_hostname:-gowa}"
 
 # GOWA settings
 HOST_PORT="${HOST_PORT:-3000}"                 # LAN exposed port
 GOWA_USER="${GOWA_USER:-admin}"
-# Passwords: generated, then stored in CT Notes as requested
 RAND_LEN="${RAND_LEN:-24}"
 
 header_info "$APP"
