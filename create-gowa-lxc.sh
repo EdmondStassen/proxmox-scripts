@@ -1,80 +1,77 @@
 #!/usr/bin/env bash
+# Based on community-scripts/ProxmoxVE ct/docker.sh style (build.func framework)
+# Adds: GOWA deployment, random root password, random basic-auth, and Proxmox Notes summary.
+
 set -euo pipefail
 
-# =======================
-# GOWA on Proxmox LXC - script
-# - Default: DHCP
-# - To use a static IP:
-#     export IP_CIDR="192.168.1.50/24"
-#     export GATEWAY="192.168.1.1"
-#   Then run the script again.
-# =======================
+source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
 
-# ====== AANPASSEN (optioneel) ======
-CTID="${CTID:-120}"                      # Uniek container ID
-HOSTNAME="${HOSTNAME:-gowa}"
-DISK_GB="${DISK_GB:-8}"                  # 8-16GB is meestal genoeg
-MEM_MB="${MEM_MB:-1024}"                 # 512-1024MB vaak OK
-CORES="${CORES:-2}"
-BRIDGE="${BRIDGE:-vmbr0}"
-STORAGE="${STORAGE:-local-lvm}"          # jouw Proxmox storage
-TEMPLATE="${TEMPLATE:-local:vztmpl/debian-12-standard_12.0-1_amd64.tar.zst}"
+# App metadata for the helper framework
+APP="GOWA (go-whatsapp-web-multidevice)"
+var_tags="${var_tags:-docker;gowa;whatsapp}"
+var_cpu="${var_cpu:-2}"
+var_ram="${var_ram:-1024}"
+var_disk="${var_disk:-8}"
+var_os="${var_os:-debian}"
+var_version="${var_version:-12}"
+var_unprivileged="${var_unprivileged:-1}"
 
-# Netwerk (standaard DHCP)
-IP_CIDR="${IP_CIDR:-dhcp}"               # "dhcp" of bijv. "192.168.1.50/24"
-GATEWAY="${GATEWAY:-}"                   # bij statisch IP: bijv. "192.168.1.1"
+# Network: community build scripts are interactive; for DHCP you can keep defaults.
+# If you want static IP, set it in the advanced settings prompts (or adapt build.func usage).
 
-# Poort mapping naar LAN
-HOST_PORT="${HOST_PORT:-3000}"
-# ===================================
+# GOWA settings
+HOST_PORT="${HOST_PORT:-3000}"                 # LAN exposed port
+GOWA_USER="${GOWA_USER:-admin}"
+# Passwords: generated, then stored in CT Notes as requested
+RAND_LEN="${RAND_LEN:-24}"
 
-# Random password generator (URL-safe-ish)
+header_info "$APP"
+variables
+color
+catch_errors
+
+# --- helpers ---
 rand_pw() {
-  # 24 chars base64-ish zonder lastige tekens
-  tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24
+  # Robust random generator (host-side), avoids /dev/urandom|tr|head hangs in some shells.
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c "${RAND_LEN}"
+  else
+    dd if=/dev/urandom bs=64 count=2 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c "${RAND_LEN}"
+  fi
 }
 
+msg_info "Generating credentials"
 ROOT_PASS="$(rand_pw)"
-GOWA_USER="admin"
 GOWA_PASS="$(rand_pw)"
+msg_ok "Credentials generated"
 
-if [[ "$IP_CIDR" != "dhcp" && -z "$GATEWAY" ]]; then
-  echo "ERROR: bij statische IP moet GATEWAY gezet zijn. (bijv. export GATEWAY=192.168.1.1)"
-  exit 1
-fi
+# --- create CT + install Docker (using the framework) ---
+start
+build_container
+description
 
-NET0="name=eth0,bridge=${BRIDGE},ip=${IP_CIDR}"
-if [[ "$IP_CIDR" != "dhcp" ]]; then
-  NET0="${NET0},gw=${GATEWAY}"
-fi
-
-echo "[1/8] LXC aanmaken (CTID=$CTID, hostname=$HOSTNAME, ip=$IP_CIDR)"
-pct create "$CTID" "$TEMPLATE" \
-  --hostname "$HOSTNAME" \
-  --cores "$CORES" \
-  --memory "$MEM_MB" \
-  --rootfs "${STORAGE}:${DISK_GB}" \
-  --net0 "$NET0" \
-  --unprivileged 1 \
-  --features "nesting=1,keyctl=1" \
-  --onboot 1 \
-  --start 1
-
-echo "[2/8] Container root password instellen (random)"
-pct set "$CTID" --password "$ROOT_PASS" >/dev/null
-
-echo "[3/8] Docker + Compose installeren in container"
+# Ensure Docker is installed (docker.sh normally does it, but we enforce to be safe)
+msg_info "Ensuring Docker + Compose are installed in CT ${CTID}"
 pct exec "$CTID" -- bash -lc '
 set -e
-apt update
-apt upgrade -y
-apt install -y ca-certificates curl git
-curl -fsSL https://get.docker.com | sh
-apt install -y docker-compose-plugin
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y ca-certificates curl git
+if ! command -v docker >/dev/null 2>&1; then
+  curl -fsSL https://get.docker.com | sh
+fi
+apt-get install -y docker-compose-plugin
 systemctl enable docker --now
 '
+msg_ok "Docker ready"
 
-echo "[4/8] GOWA repo clonen"
+# Set container root password (container root, not Proxmox host root)
+msg_info "Setting container root password (random)"
+pct set "$CTID" --password "$ROOT_PASS" >/dev/null
+msg_ok "Container root password set"
+
+# Clone GOWA repo
+msg_info "Cloning GOWA repository"
 pct exec "$CTID" -- bash -lc '
 set -e
 mkdir -p /opt/gowa
@@ -83,13 +80,12 @@ if [ ! -d go-whatsapp-web-multidevice ]; then
   git clone https://github.com/aldinokemal/go-whatsapp-web-multidevice
 fi
 '
+msg_ok "Repository cloned"
 
-echo "[5/8] docker-compose.yml klaarzetten (poort ${HOST_PORT} open op LAN + basic auth aan)"
-# Let op: we gebruiken een compose die altijd werkt (image-based),
-# maar laten de repo staan zodat je later vanuit source kunt werken.
+# Write docker-compose.yml (image-based, reliable) and start
+msg_info "Writing docker-compose.yml + starting GOWA"
 pct exec "$CTID" -- bash -lc "set -e
 cd /opt/gowa/go-whatsapp-web-multidevice
-
 cat > docker-compose.yml <<EOF
 services:
   whatsapp:
@@ -109,37 +105,29 @@ services:
 volumes:
   whatsapp:
 EOF
-"
-
-echo "[6/8] GOWA starten"
-pct exec "$CTID" -- bash -lc '
-set -e
-cd /opt/gowa/go-whatsapp-web-multidevice
 docker compose up -d
 docker compose ps
-'
+"
+msg_ok "GOWA started"
 
-echo "[7/8] IP-adres(sen) ophalen (LXC + Docker container)"
-# LXC IP (eerste IPv4 op eth0)
+# Get IPs
+msg_info "Detecting IP addresses"
 LXC_IP="$(pct exec "$CTID" -- bash -lc "ip -4 -o addr show dev eth0 | awk '{print \$4}' | cut -d/ -f1 | head -n1" | tr -d '\r' || true)"
-
-# Docker container IP (bridge network)
-DOCKER_IP="$(pct exec "$CTID" -- bash -lc "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' whatsapp 2>/dev/null" | tr -d '\r' || true)"
-
 if [[ -z "${LXC_IP}" ]]; then
-  # DHCP kan soms nét wat later komen, probeer nog 1x
   sleep 2
   LXC_IP="$(pct exec "$CTID" -- bash -lc "ip -4 -o addr show dev eth0 | awk '{print \$4}' | cut -d/ -f1 | head -n1" | tr -d '\r' || true)"
 fi
-
+DOCKER_IP="$(pct exec "$CTID" -- bash -lc "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' whatsapp 2>/dev/null" | tr -d '\r' || true)"
 GOWA_URL="http://${LXC_IP}:${HOST_PORT}"
+msg_ok "IP detection complete"
 
-echo "[8/8] Proxmox Notes/Description vullen met summary info"
+# Write Proxmox Notes/Description
+msg_info "Writing Proxmox CT Notes/Description"
 DESC="$(cat <<EOF
 GOWA (go-whatsapp-web-multidevice) deployed via Docker Compose
 
 LXC:
-- Hostname: ${HOSTNAME}
+- CTID: ${CTID}
 - IP: ${LXC_IP}
 - Root password: ${ROOT_PASS}
 
@@ -161,11 +149,9 @@ Paths:
 - Data volume: docker volume 'whatsapp' -> /app/storages
 EOF
 )"
-
-# Zet in Proxmox "Notes"
 pct set "$CTID" --description "$DESC" >/dev/null
+msg_ok "Notes updated"
 
-echo "Klaar ✅"
-echo "LXC IP: ${LXC_IP}"
-echo "GOWA URL: ${GOWA_URL}"
-echo "Root password + Basic Auth staan nu ook in Proxmox Notes (CT ${CTID})."
+msg_ok "Completed successfully!\n"
+echo -e "${INFO}${YW}Open:${CL} ${GOWA_URL}"
+echo -e "${INFO}${YW}Credentials are stored in CT Notes/Description for CTID ${CTID}.${CL}"
