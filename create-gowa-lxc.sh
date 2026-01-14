@@ -111,6 +111,9 @@ services:
       - APP_DEBUG=true
       - APP_OS=Chrome
       - APP_ACCOUNT_VALIDATION=false
+      - WEBHOOK_URL=http://whatsapp-bot.local:8080/webhook
+      - WEBHOOK_EVENTS=message,message.ack
+      - WEBHOOK_SECRET=in-productie-zet-hier-een-sterk-geheim
 volumes:
   whatsapp:
 EOF
