@@ -71,8 +71,9 @@ msg_ok "Docker ready"
 
 # Set container root password (container root, not Proxmox host root)
 msg_info "Setting container root password (random)"
-pct set "$CTID" --password "$ROOT_PASS" >/dev/null
+pct exec "$CTID" -- bash -lc "echo root:${ROOT_PASS} | chpasswd"
 msg_ok "Container root password set"
+
 
 # Clone GOWA repo
 msg_info "Cloning GOWA repository"
