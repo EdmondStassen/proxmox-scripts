@@ -5,12 +5,13 @@
 # - Separate volumes per instance (separate WhatsApp sessions)
 # - Shared Basic Auth + shared webhook config
 # - Adds LAN DNS name via mDNS/Avahi: e.g. gowa.local -> LXC IP
-# - Adds per-instance "friendly" DNS names (also via Avahi): gowa1.local and gowa2.local -> same LXC IP
-#   (Ports still distinguish them, but names are convenient for calls and bookmarks)
+#
+# Fix: IP detection/Notes were polluted by build.func colored output.
+# We now read the IP using pct exec and ONLY accept a clean IPv4 via regex,
+# plus we strip any ANSI escape codes from any captured output as a safety net.
 
 set -euo pipefail
 
-# Prevent "unbound variable" errors in Proxmox shell
 : "${SSH_CLIENT:=}"
 : "${SSH_TTY:=}"
 : "${SSH_CONNECTION:=}"
@@ -41,13 +42,7 @@ WEBHOOK_EVENTS="${WEBHOOK_EVENTS:-message,message.ack}"
 WEBHOOK_SECRET="${WEBHOOK_SECRET:-}" # if empty -> generated
 
 # mDNS/DNS on LAN (Avahi .local)
-# Base name: gowa.local
 MDNS_BASE="${MDNS_BASE:-${var_hostname}}"
-
-# Per-instance names (also advertised via Avahi; both point to the same LXC IP)
-# Convenient for using in calls/bookmarks. Ports still apply.
-MDNS_1="${MDNS_1:-${MDNS_BASE}1}"   # gowa1.local
-MDNS_2="${MDNS_2:-${MDNS_BASE}2}"   # gowa2.local
 
 header_info "$APP"
 variables
@@ -63,6 +58,17 @@ rand_pw() {
   else
     dd if=/dev/urandom bs=64 count=2 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c "${RAND_LEN}"
   fi
+}
+
+# Strip ANSI escape codes (defensive)
+strip_ansi() {
+  # Removes ESC[...m and similar sequences
+  sed -r 's/\x1B\[[0-9;?]*[ -/]*[@-~]//g'
+}
+
+# Extract first IPv4 from input (defensive)
+first_ipv4() {
+  grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1
 }
 
 msg_info "Generating credentials"
@@ -96,13 +102,11 @@ systemctl enable avahi-daemon --now
 msg_ok "Docker + Avahi ready"
 
 # ---------------- set CT hostname (base .local name) ----------------
-# Avahi will advertise the system hostname as <hostname>.local
 msg_info "Configuring base mDNS hostname (${MDNS_BASE}.local)"
 pct exec "$CTID" -- bash -lc "
 set -e
 echo '${MDNS_BASE}' > /etc/hostname
 hostnamectl set-hostname '${MDNS_BASE}' || true
-# Ensure Debian-style hostname mapping exists
 if ! grep -qE '^127\.0\.1\.1\s+' /etc/hosts; then
   echo '127.0.1.1 ${MDNS_BASE}' >> /etc/hosts
 else
@@ -111,42 +115,6 @@ fi
 systemctl restart avahi-daemon
 "
 msg_ok "Base mDNS hostname configured"
-
-# ---------------- add per-instance mDNS aliases via Avahi service files ----------------
-# These create additional .local names that point to the same host.
-# Note: mDNS doesn't do "A records" centrally; Avahi answers for these names on this host.
-msg_info "Adding per-instance mDNS aliases (${MDNS_1}.local, ${MDNS_2}.local)"
-pct exec "$CTID" -- bash -lc "
-set -e
-mkdir -p /etc/avahi/services
-
-cat > /etc/avahi/services/${MDNS_1}.service <<EOF
-<?xml version=\"1.0\" standalone=\"no\"?>
-<!DOCTYPE service-group SYSTEM \"avahi-service.dtd\">
-<service-group>
-  <name replace-wildcards=\"no\">${MDNS_1}</name>
-  <service>
-    <type>_http._tcp</type>
-    <port>${HOST_PORT}</port>
-  </service>
-</service-group>
-EOF
-
-cat > /etc/avahi/services/${MDNS_2}.service <<EOF
-<?xml version=\"1.0\" standalone=\"no\"?>
-<!DOCTYPE service-group SYSTEM \"avahi-service.dtd\">
-<service-group>
-  <name replace-wildcards=\"no\">${MDNS_2}</name>
-  <service>
-    <type>_http._tcp</type>
-    <port>${HOST_PORT_2}</port>
-  </service>
-</service-group>
-EOF
-
-systemctl restart avahi-daemon
-"
-msg_ok "mDNS aliases added"
 
 # ---------------- root password ----------------
 msg_info "Setting container root password"
@@ -211,20 +179,33 @@ cd /opt/gowa/instance2 && docker compose up -d
 '
 msg_ok "GOWA instances started"
 
-# ---------------- Networking info ----------------
-msg_info "Detecting IP addresses"
-LXC_IP="$(pct exec "$CTID" -- bash -lc "ip -4 -o addr show eth0 | awk '{print \$4}' | cut -d/ -f1 | head -n1" | tr -d "\r" || true)"
+# ---------------- Networking info (FIXED) ----------------
+msg_info "Detecting IP addresses (clean)"
+# Get LXC IP: only accept the first clean IPv4 from eth0.
+LXC_IP_RAW="$(pct exec "$CTID" -- bash -lc "ip -4 -o addr show dev eth0 | awk '{print \$4}' | cut -d/ -f1" 2>/dev/null || true)"
+LXC_IP="$(printf '%s' "$LXC_IP_RAW" | strip_ansi | first_ipv4 || true)"
 
-DOCKER_IP_1="$(pct exec "$CTID" -- bash -lc "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' gowa-wa1 2>/dev/null" | tr -d "\r" || true)"
-DOCKER_IP_2="$(pct exec "$CTID" -- bash -lc "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' gowa-wa2 2>/dev/null" | tr -d "\r" || true)"
+# Fallback: try hostname -I
+if [[ -z "${LXC_IP}" ]]; then
+  LXC_IP_RAW="$(pct exec "$CTID" -- bash -lc "hostname -I | awk '{print \$1}'" 2>/dev/null || true)"
+  LXC_IP="$(printf '%s' "$LXC_IP_RAW" | strip_ansi | first_ipv4 || true)"
+fi
+
+# Docker IPs (also sanitized)
+DOCKER_IP_1_RAW="$(pct exec "$CTID" -- bash -lc "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' gowa-wa1 2>/dev/null" || true)"
+DOCKER_IP_2_RAW="$(pct exec "$CTID" -- bash -lc "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' gowa-wa2 2>/dev/null" || true)"
+DOCKER_IP_1="$(printf '%s' "$DOCKER_IP_1_RAW" | strip_ansi | first_ipv4 || true)"
+DOCKER_IP_2="$(printf '%s' "$DOCKER_IP_2_RAW" | strip_ansi | first_ipv4 || true)"
+
+# If still empty, mark clearly
+[[ -z "${LXC_IP}" ]] && LXC_IP="(unknown)"
+[[ -z "${DOCKER_IP_1}" ]] && DOCKER_IP_1="(unknown)"
+[[ -z "${DOCKER_IP_2}" ]] && DOCKER_IP_2="(unknown)"
 
 GOWA_URL_1_IP="http://${LXC_IP}:${HOST_PORT}"
 GOWA_URL_2_IP="http://${LXC_IP}:${HOST_PORT_2}"
-
-GOWA_URL_BASE_DNS="http://${MDNS_BASE}.local"
-GOWA_URL_1_DNS="http://${MDNS_1}.local:${HOST_PORT}"
-GOWA_URL_2_DNS="http://${MDNS_2}.local:${HOST_PORT_2}"
-
+GOWA_URL_1_DNS="http://${MDNS_BASE}.local:${HOST_PORT}"
+GOWA_URL_2_DNS="http://${MDNS_BASE}.local:${HOST_PORT_2}"
 msg_ok "IP detection complete"
 
 # ---------------- Proxmox Notes ----------------
@@ -235,8 +216,7 @@ GOWA / WhatsMeow – dual instance deployment + mDNS (.local)
 LXC:
 - CTID: ${CTID}
 - IP: ${LXC_IP}
-- Base mDNS hostname: ${MDNS_BASE}.local
-- Instance mDNS aliases: ${MDNS_1}.local, ${MDNS_2}.local
+- mDNS hostname: ${MDNS_BASE}.local
 - Root password: ${ROOT_PASS}
 
 Bridge instance 1:
@@ -265,12 +245,8 @@ Webhook (shared):
 - Events: ${WEBHOOK_EVENTS}
 
 LAN usage:
-- Base (same host): ${GOWA_URL_BASE_DNS}:${HOST_PORT} and :${HOST_PORT_2}
-- Instance 1: ${GOWA_URL_1_DNS}
-- Instance 2: ${GOWA_URL_2_DNS}
-
-Paths:
-- Base: /opt/gowa
+- Instance 1: http://${MDNS_BASE}.local:${HOST_PORT}
+- Instance 2: http://${MDNS_BASE}.local:${HOST_PORT_2}
 EOF
 )"
 pct set "$CTID" --description "$DESC" >/dev/null
