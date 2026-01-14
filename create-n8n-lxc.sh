@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 # Proxmox LXC: n8n via Docker Compose (SQLite)
-# - No npm / Node install
-# - Avahi mDNS: n8n.local
+# - No npm / Node install (prevents npm registry timeouts)
+# - Avahi mDNS: n8n.local (configurable via MDNS_BASE)
 # - Proxmox Notes with URLs + secrets
 # - Robust IP detection
+# - Fix: prevent SSH_CLIENT/SSH_TTY/SSH_CONNECTION unbound under set -u
+
+# Ensure these are always defined (build.func may reference them)
+export SSH_CLIENT="${SSH_CLIENT:-}"
+export SSH_TTY="${SSH_TTY:-}"
+export SSH_CONNECTION="${SSH_CONNECTION:-}"
+
 set -euo pipefail
 
 source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
@@ -18,13 +25,20 @@ var_version="${var_version:-13}"
 var_unprivileged="${var_unprivileged:-1}"
 var_hostname="${var_hostname:-n8n}"
 
-# Docker-in-LXC like GOWA pattern
+# Docker-in-LXC like the GOWA pattern
 var_install="docker-install"
 
+# ---------------- Settings ----------------
 HOST_PORT="${HOST_PORT:-5678}"
+
+# mDNS (Avahi)
 MDNS_BASE="${MDNS_BASE:-${var_hostname}}"
 ENABLE_MDNS="${ENABLE_MDNS:-1}"
+
+# Secrets length (alnum)
 RAND_LEN="${RAND_LEN:-48}"
+
+# Docker image
 N8N_IMAGE="${N8N_IMAGE:-n8nio/n8n:latest}"
 
 header_info "$APP"
@@ -32,6 +46,7 @@ variables
 color
 catch_errors
 
+# ---------------- helpers ----------------
 rand_pw() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -base64 96 | tr -dc 'A-Za-z0-9' | head -c "${RAND_LEN}"
@@ -39,8 +54,10 @@ rand_pw() {
     dd if=/dev/urandom bs=128 count=2 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c "${RAND_LEN}"
   fi
 }
+
 strip_ansi(){ sed -r 's/\x1B\[[0-9;?]*[ -/]*[@-~]//g'; }
 first_ipv4(){ grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1; }
+
 detect_lxc_ip() {
   local raw ip
   raw="$(pct exec "$CTID" -- bash -lc "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | head -n1" 2>/dev/null || true)"
@@ -53,21 +70,26 @@ detect_lxc_ip() {
   printf '%s' "$ip"
 }
 
+# ---------------- generate credentials ----------------
 msg_info "Generating credentials"
 ROOT_PASS="$(rand_pw)"
 N8N_ENCRYPTION_KEY="$(rand_pw)"
 msg_ok "Credentials generated"
 
+# ---------------- create CT ----------------
 start
 build_container
 description
 
+# ---------------- install Docker + compose (+ optional Avahi) ----------------
 msg_info "Installing Docker + Compose plugin"
 pct exec "$CTID" -- bash -lc '
   set -e
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get install -y ca-certificates curl
+
+  # Docker engine
   command -v docker >/dev/null || curl -fsSL https://get.docker.com | sh
   apt-get install -y docker-compose-plugin
   systemctl enable docker --now
@@ -88,25 +110,31 @@ if [[ "${ENABLE_MDNS}" == "1" ]]; then
     set -e
     echo '${MDNS_BASE}' > /etc/hostname
     hostnamectl set-hostname '${MDNS_BASE}' || true
+
     if ! grep -qE '^127\.0\.1\.1\s+' /etc/hosts; then
       echo '127.0.1.1 ${MDNS_BASE}' >> /etc/hosts
     else
       sed -i -E 's/^127\.0\.1\.1\s+.*/127.0.1.1 ${MDNS_BASE}/' /etc/hosts
     fi
+
     systemctl restart avahi-daemon
   " >/dev/null
   msg_ok "mDNS configured"
 fi
 
+# ---------------- set root password ----------------
 msg_info "Setting container root password"
 pct exec "$CTID" -- bash -lc "echo root:${ROOT_PASS} | chpasswd" >/dev/null
 msg_ok "Root password set"
 
+# ---------------- Compose project (n8n + SQLite) ----------------
 msg_info "Writing compose project (SQLite) + starting n8n"
-# .env (host variables expanded OK)
+
+# 1) .env (host variables expanded safely here)
 pct exec "$CTID" -- bash -lc "
   set -e
   mkdir -p /opt/n8n
+
   cat > /opt/n8n/.env <<EOF
 N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
 N8N_HOST=${MDNS_BASE}.local
@@ -118,7 +146,7 @@ HOST_PORT=${HOST_PORT}
 EOF
 " >/dev/null
 
-# docker-compose.yml literal (no host expansion)
+# 2) docker-compose.yml written LITERALLY (no ${...} expansion on Proxmox host)
 pct exec "$CTID" -- bash -s <<'REMOTE' >/dev/null
 set -e
 cat > /opt/n8n/docker-compose.yml <<'EOF'
@@ -144,9 +172,11 @@ volumes:
 EOF
 REMOTE
 
+# 3) Start stack
 pct exec "$CTID" -- bash -lc "docker compose -f /opt/n8n/docker-compose.yml --env-file /opt/n8n/.env up -d" >/dev/null
 msg_ok "n8n started"
 
+# ---------------- IP detection + Notes ----------------
 msg_info "Detecting IP and writing Proxmox Notes"
 LXC_IP="$(detect_lxc_ip)"
 URL_IP="http://${LXC_IP}:${HOST_PORT}"
@@ -176,10 +206,14 @@ Commands:
 - docker logs -f n8n
 - docker compose -f /opt/n8n/docker-compose.yml --env-file /opt/n8n/.env pull
 - docker compose -f /opt/n8n/docker-compose.yml --env-file /opt/n8n/.env up -d
+- docker compose -f /opt/n8n/docker-compose.yml --env-file /opt/n8n/.env restart
 
 Secrets:
 - LXC root password: ${ROOT_PASS}
 - N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+
+Notes:
+- If you change the mDNS name, update N8N_HOST + WEBHOOK_URL in /opt/n8n/.env and restart compose.
 EOF
 )"
 pct set "$CTID" --description "$DESC" >/dev/null
