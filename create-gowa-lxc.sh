@@ -161,7 +161,15 @@ msg_ok "Root password set"
 
 # ---------------- Compose projects (2 instances) ----------------
 msg_info "Creating Docker Compose projects (instance1 + instance2)"
-pct exec "$CTID" -- env BASIC_AUTH_PASS="$GOWA_PASS" GOWA_USER="$GOWA_USER" bash -lc '
+pct exec "$CTID" -- env \
+  BASIC_AUTH_PASS="$GOWA_PASS" \
+  GOWA_USER="$GOWA_USER" \
+  HOST_PORT="$HOST_PORT" \
+  HOST_PORT_2="$HOST_PORT_2" \
+  WEBHOOK_URL="$WEBHOOK_URL" \
+  WEBHOOK_EVENTS="$WEBHOOK_EVENTS" \
+  WEBHOOK_SECRET="$WEBHOOK_SECRET" \
+  bash -lc '
 set -e
 
 mkdir -p /opt/gowa/instance1 /opt/gowa/instance2
@@ -183,13 +191,12 @@ services:
       APP_OS: "Chrome"
       APP_ACCOUNT_VALIDATION: "false"
       WHATSAPP_WEBHOOK: "${WEBHOOK_URL}"
-      WHATSAPP_WEBHOOK_EVENTS: "message,message.ack"
+      WHATSAPP_WEBHOOK_EVENTS: "${WEBHOOK_EVENTS}"
       WHATSAPP_WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
 
 volumes:
   whatsapp1:
 EOF
-
 
 cat > /opt/gowa/instance2/docker-compose.yml <<EOF
 services:
@@ -208,17 +215,17 @@ services:
       APP_OS: "Chrome"
       APP_ACCOUNT_VALIDATION: "false"
       WHATSAPP_WEBHOOK: "${WEBHOOK_URL}"
-      WHATSAPP_WEBHOOK_EVENTS: "message,message.ack"
+      WHATSAPP_WEBHOOK_EVENTS: "${WEBHOOK_EVENTS}"
       WHATSAPP_WEBHOOK_SECRET: "${WEBHOOK_SECRET}"
 
 volumes:
   whatsapp2:
 EOF
 
-
 cd /opt/gowa/instance1 && docker compose up -d
 cd /opt/gowa/instance2 && docker compose up -d
 '
+
 msg_ok "GOWA instances started"
 
 
