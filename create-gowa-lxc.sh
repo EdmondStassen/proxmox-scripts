@@ -161,7 +161,7 @@ msg_ok "Root password set"
 
 # ---------------- Compose projects (2 instances) ----------------
 msg_info "Creating Docker Compose projects (instance1 + instance2)"
-pct exec "$CTID" -- bash -lc '
+pct exec "$CTID" -- env BASIC_AUTH_PASS="$GOWA_PASS" GOWA_USER="$GOWA_USER" bash -lc '
 set -e
 
 mkdir -p /opt/gowa/instance1 /opt/gowa/instance2
@@ -173,11 +173,11 @@ services:
     container_name: gowa-wa1
     restart: always
     network_mode: host
-    command: ["rest", "-p", "${HOST_PORT}"]
+    command: ["rest", "--port=${HOST_PORT}"]
     volumes:
       - whatsapp1:/app/storages
     environment:
-      APP_BASIC_AUTH: "admin:${BASIC_AUTH_PASS}"
+      APP_BASIC_AUTH: "${GOWA_USER}:${BASIC_AUTH_PASS}"
       APP_PORT: "${HOST_PORT}"
       APP_DEBUG: "true"
       APP_OS: "Chrome"
@@ -193,16 +193,16 @@ EOF
 
 cat > /opt/gowa/instance2/docker-compose.yml <<EOF
 services:
-  whatsapp1:
+  whatsapp2:
     image: aldinokemal2104/go-whatsapp-web-multidevice
     container_name: gowa-wa2
     restart: always
     network_mode: host
-    command: ["rest", "-p", "${HOST_PORT_2}"]
+    command: ["rest", "--port=${HOST_PORT_2}"]
     volumes:
       - whatsapp2:/app/storages
     environment:
-      APP_BASIC_AUTH: "admin:${BASIC_AUTH_PASS}"
+      APP_BASIC_AUTH: "${GOWA_USER}:${BASIC_AUTH_PASS}"
       APP_PORT: "${HOST_PORT_2}"
       APP_DEBUG: "true"
       APP_OS: "Chrome"
@@ -220,6 +220,7 @@ cd /opt/gowa/instance1 && docker compose up -d
 cd /opt/gowa/instance2 && docker compose up -d
 '
 msg_ok "GOWA instances started"
+
 
 # ---------------- Networking info (FIXED) ----------------
 msg_info "Detecting IP addresses (clean)"
