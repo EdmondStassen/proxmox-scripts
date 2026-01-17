@@ -101,6 +101,52 @@ systemctl enable avahi-daemon --now
 '
 msg_ok "Docker + Avahi ready"
 
+
+# ---------------- Avahi: force IPv4 only + disable AAAA ----------------
+msg_info "Configuring Avahi for IPv4-only on eth0 + disabling AAAA"
+pct exec "$CTID" -- bash -lc '
+  set -e
+  CONF="/etc/avahi/avahi-daemon.conf"
+
+  # Ensure sections exist
+  grep -q "^\[server\]" "$CONF" || printf "\n[server]\n" >> "$CONF"
+  grep -q "^\[publish\]" "$CONF" || printf "\n[publish]\n" >> "$CONF"
+
+  set_kv () {
+    local section="$1" key="$2" value="$3"
+    # If key exists (commented or not) inside section -> replace; else insert right after section header
+    if awk -v s="[$section]" -v k="$key" '
+      $0==s {in=1; next}
+      in && $0 ~ /^\[/ {exit}
+      in && $0 ~ "^[#;]?"k"=" {found=1; exit}
+      END{exit found?0:1}
+    ' "$CONF"; then
+      awk -v s="[$section]" -v k="$key" -v v="$value" '
+        BEGIN{in=0}
+        $0==s {in=1; print; next}
+        in && $0 ~ /^\[/ {in=0}
+        in && $0 ~ "^[#;]?"k"=" {print k"="v; next}
+        {print}
+      ' "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
+    else
+      awk -v s="[$section]" -v k="$key" -v v="$value" '
+        BEGIN{done=0}
+        {print}
+        $0==s && !done {print k"="v; done=1}
+      ' "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
+    fi
+  }
+
+  set_kv server  use-ipv4 yes
+  set_kv server  use-ipv6 no
+  set_kv server  allow-interfaces eth0
+  set_kv publish publish-aaaa-on-ipv4 no
+  set_kv publish publish-a-on-ipv6 no
+
+  systemctl restart avahi-daemon
+'
+msg_ok "Avahi IPv4-only/AAAA disabled configuration applied"
+
 # ---------------- set CT hostname (base .local name) ----------------
 msg_info "Configuring base mDNS hostname (${MDNS_BASE}.local)"
 pct exec "$CTID" -- bash -lc "
@@ -134,42 +180,50 @@ services:
     image: aldinokemal2104/go-whatsapp-web-multidevice
     container_name: gowa-wa1
     restart: always
-    ports:
-      - "'"${HOST_PORT}"':3000"
+    network_mode: host
+    command:
+      - rest
+      - -p
+      - "${HOST_PORT}"
     volumes:
       - whatsapp1:/app/storages
     environment:
-      - APP_BASIC_AUTH='"${GOWA_USER}:${GOWA_PASS}"'
-      - APP_PORT=3000
+      - APP_BASIC_AUTH=admin:${BASIC_AUTH_PASS}
+      - APP_PORT=${HOST_PORT}
       - APP_DEBUG=true
       - APP_OS=Chrome
       - APP_ACCOUNT_VALIDATION=false
-      - WEBHOOK_URL='"${WEBHOOK_URL}"'
-      - WEBHOOK_EVENTS='"${WEBHOOK_EVENTS}"'
-      - WEBHOOK_SECRET='"${WEBHOOK_SECRET}"'
+      - WHATSAPP_WEBHOOK=${WEBHOOK_URL}
+      - WHATSAPP_WEBHOOK_EVENTS=message,message.ack
+      - WHATSAPP_WEBHOOK_SECRET=${WEBHOOK_SECRET}
+
 volumes:
   whatsapp1:
 EOF
 
 cat > /opt/gowa/instance2/docker-compose.yml <<EOF
 services:
-  whatsapp2:
+  whatsapp1:
     image: aldinokemal2104/go-whatsapp-web-multidevice
     container_name: gowa-wa2
     restart: always
-    ports:
-      - "'"${HOST_PORT_2}"':3000"
+    network_mode: host
+    command:
+      - rest
+      - -p
+      - "${HOST_PORT_2}"
     volumes:
-      - whatsapp2:/app/storages
+      - whatsapp1:/app/storages
     environment:
-      - APP_BASIC_AUTH='"${GOWA_USER}:${GOWA_PASS}"'
-      - APP_PORT=3000
+      - APP_BASIC_AUTH=admin:${BASIC_AUTH_PASS}
+      - APP_PORT=${HOST_PORT_2}
       - APP_DEBUG=true
       - APP_OS=Chrome
       - APP_ACCOUNT_VALIDATION=false
-      - WEBHOOK_URL='"${WEBHOOK_URL}"'
-      - WEBHOOK_EVENTS='"${WEBHOOK_EVENTS}"'
-      - WEBHOOK_SECRET='"${WEBHOOK_SECRET}"'
+      - WHATSAPP_WEBHOOK=${WEBHOOK_URL}
+      - WHATSAPP_WEBHOOK_EVENTS=message,message.ack
+      - WHATSAPP_WEBHOOK_SECRET=${WEBHOOK_SECRET}
+
 volumes:
   whatsapp2:
 EOF
