@@ -12,14 +12,20 @@
 msg_info "Loaded DHCP hostname publishing helper"
 
 dhcp_hostname::prompt() {
+  # If caller already set var_hostname, don't prompt
   if [[ -n "${var_hostname:-}" ]]; then
     export var_hostname
     return 0
   fi
 
-  echo -e "\nEnter a hostname for this container (letters/numbers/hyphens; 1-63 chars)."
+  msg_info "DHCP Hostname Publishing"
+  echo
+  echo "Enter the hostname to publish via DHCP (letters, numbers, hyphens only)"
+  echo "Example: web01, media-server"
   read -r -p "Hostname: " var_hostname
+  echo
 
+  # sanitize + validate
   var_hostname="$(
     echo "${var_hostname}" \
       | tr '[:upper:]' '[:lower:]' \
@@ -31,10 +37,11 @@ dhcp_hostname::prompt() {
     exit 1
   fi
   if [[ "${#var_hostname}" -gt 63 ]]; then
-    msg_error "Hostname '${var_hostname}' is too long (${#var_hostname} chars). Max is 63."
+    msg_error "Hostname '${var_hostname}' is too long (max 63 characters)."
     exit 1
   fi
 
+  msg_ok "Using hostname: ${var_hostname}"
   export var_hostname
 }
 
@@ -131,7 +138,7 @@ fi
 exit 0
 DHCPEOF
   then
-    msg_ok "DHCP hostname publishing configured (CT ${CTID}: ${var_hostname})"
+    msg_ok "DHCP hostname '${var_hostname}' published (CT ${CTID})"
     return 0
   else
     msg_error "Failed to configure DHCP hostname publishing inside CT ${CTID}"
