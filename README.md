@@ -11,7 +11,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/EdmondStassen/proxmox-sc
 Include scripts:
 
 <b>DNS HOSTNAME </b>
-'''markdown
+```markdown
 # ------------------------------------------------------------------
 # DNS hostname publishing (FULLY SELF-CONTAINED BLOCK)
 # ------------------------------------------------------------------
@@ -27,5 +27,7 @@ build_container
 
 # Configure hostname + DHCP publishing inside the container
 dhcp_hostname::apply
-# ------------------------------------------------------------------
-'''
+# ------------------------------------------------------------------```
+
+
+
