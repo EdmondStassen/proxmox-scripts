@@ -1,30 +1,13 @@
 #!/usr/bin/env bash
+# DHCP Hostname Publisher - Proxmox Helper Include
 #
-# ------------------------------------------------------------
-#  DHCP Hostname Publisher – Proxmox Helper Include
-# ------------------------------------------------------------
+# Usage:
+#   source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
+#   source <(curl -fsSL https://raw.githubusercontent.com/EdmondStassen/proxmox-scripts/main/includes/dhcp-hostname.include.sh)
 #
-#  How to use in a helper script:
-#
-#    source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
-#    source /root/includes/dhcp-hostname.include.sh
-#
-#    header_info "$APP"
-#    variables
-#    color
-#    catch_errors
-#
-#    dhcp_hostname::prompt
-#
-#    start
-#    build_container
-#    dhcp_hostname::apply
-#
-#  Scope:
-#    - Debian/Ubuntu LXC
-#    - IPv4 DHCP
-#    - No DHCPv6 hostname publishing
-# ------------------------------------------------------------
+#   dhcp_hostname::prompt   # before build_container
+#   build_container
+#   dhcp_hostname::apply    # after build_container
 
 dhcp_hostname::prompt() {
   if [[ -n "${var_hostname:-}" ]]; then
@@ -35,9 +18,11 @@ dhcp_hostname::prompt() {
   echo -e "\nEnter a hostname for this container (letters/numbers/hyphens; 1-63 chars)."
   read -r -p "Hostname: " var_hostname
 
-  var_hostname="$(echo "${var_hostname}" \
-    | tr '[:upper:]' '[:lower:]' \
-    | sed -E 's/[^a-z0-9-]//g; s/^-+//; s/-+$//')"
+  var_hostname="$(
+    echo "${var_hostname}" \
+      | tr '[:upper:]' '[:lower:]' \
+      | sed -E 's/[^a-z0-9-]//g; s/^-+//; s/-+$//'
+  )"
 
   if [[ -z "${var_hostname}" ]]; then
     msg_error "Hostname cannot be empty after sanitizing."
@@ -103,10 +88,10 @@ echo "$HN" > /etc/hostname
 hostname "$HN" || true
 
 # /etc/hosts entry
-if grep -qE '^127\.0\.1\.1\s+' /etc/hosts; then
-  sed -i -E "s/^127\.0\.1\.1\s+.*/127.0.1.1\t$HN/" /etc/hosts
+if grep -qE '^127\.0\.1\.1[[:space:]]+' /etc/hosts; then
+  sed -i -E "s/^127\.0\.1\.1[[:space:]]+.*/127.0.1.1\t$HN/" /etc/hosts
 else
-  echo -e "127.0.1.1\t$HN" >> /etc/hosts
+  printf "127.0.1.1\t%s\n" "$HN" >> /etc/hosts
 fi
 
 # dhclient: send hostname
