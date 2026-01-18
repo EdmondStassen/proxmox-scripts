@@ -3,3 +3,6 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/EdmondStassen/proxmox-sc
 
 n8n:
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/EdmondStassen/proxmox-scripts/refs/heads/main/create-n8n-lxc.sh)"
+
+deb lxc with hostname: 
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/EdmondStassen/proxmox-scripts/refs/heads/main/create-debian-lxc-dnshostname.sh)"
