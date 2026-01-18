@@ -43,6 +43,8 @@ Networking:
 - LXC IP: ${LXC_IP}
 EOF
 )"
+
+# Don't forget to remove description in your main bash script!
 # ------------------------------------------------------------------
 END_COMMENT
 
