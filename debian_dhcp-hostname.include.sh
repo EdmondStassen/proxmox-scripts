@@ -9,7 +9,7 @@
 #   build_container
 #   dhcp_hostname::apply    # after build_container
 
-echo "Including DHCP hostname - initiating"
+msg_info "Loaded DHCP hostname publishing helper"
 
 dhcp_hostname::prompt() {
   if [[ -n "${var_hostname:-}" ]]; then
