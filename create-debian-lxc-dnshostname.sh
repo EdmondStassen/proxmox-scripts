@@ -43,22 +43,49 @@ function update_script() {
 start
 
 # ------------------------------------------------------------------
+# Helper: safe include (download -> source)
+# ------------------------------------------------------------------
+include::source_url() {
+  local url="$1"
+  local tmp
+  tmp="$(mktemp)" || {
+    msg_error "mktemp failed"
+    exit 1
+  }
+
+  if ! curl -fsSL "$url" -o "$tmp"; then
+    msg_error "Include kon niet worden gedownload (URL bestaat niet of geen toegang): $url"
+    rm -f "$tmp"
+    exit 1
+  fi
+
+  # Optional sanity check: file should look like shell (not HTML)
+  if head -n 1 "$tmp" | grep -qiE '<!doctype html|<html'; then
+    msg_error "Include lijkt HTML (mogelijk 404/redirect pagina), niet bash: $url"
+    rm -f "$tmp"
+    exit 1
+  fi
+
+  # shellcheck disable=SC1090
+  source "$tmp"
+  rm -f "$tmp"
+}
+
+# ------------------------------------------------------------------
 # DNS hostname publishing (FULLY SELF-CONTAINED BLOCK)
 # ------------------------------------------------------------------
-SOURCEURL="https://raw.githubusercontent.com/EdmondStassen/proxmox-scripts/main/debian_dhcp-hostname.include.sh"
-source <(curl -fsSL "$SOURCEURL") # Fetch bash script
+SOURCEURL="https://raw.githubusercontent.com/EdmondStassen/proxmox-scripts/main/includes/dhcp-hostname.include.sh"
+include::source_url "$SOURCEURL"
 unset SOURCEURL
 
-dhcp_hostname::prompt # Prompt for hostname
-build_container # Create the container (CTID assigned here)
+dhcp_hostname::prompt            # Prompt for hostname
+build_container                  # Create the container (CTID assigned here)
 
 # ------------------------------------------------------------------
 # Proxmox Notes (lazy include on first use)
 # ------------------------------------------------------------------
-
-# Load notes helper only when we actually start writing notes
 SOURCEURL="https://raw.githubusercontent.com/EdmondStassen/proxmox-scripts/main/includes/notes.include.sh"
-source <(curl -fsSL "$SOURCEURL") # Fetch bash script
+include::source_url "$SOURCEURL"
 unset SOURCEURL
 
 notes::init "Provisioning notes for ${APP} (CTID ${CTID})" # Clean notes once
@@ -76,22 +103,20 @@ Resources:
 - Disk: ${var_disk} GB
 EOF
 )"
-notes::append "$NOTES_BLOCK"  # write system and resource info
+notes::append "$NOTES_BLOCK"
 unset NOTES_BLOCK
 
 # Configure hostname + DHCP publishing inside the container
 dhcp_hostname::apply
 
-
-
 # NOTES
 NOTES_BLOCK="$(cat <<EOF
 Networking:
-- Hostname: ${DHCP_HOSTNAME:-unknown}
+- Hostname: ${var_hostname:-unknown}
 - CTID: ${CTID}
 EOF
 )"
-notes::append "$NOTES_BLOCK"  # Networking info
+notes::append "$NOTES_BLOCK"
 unset NOTES_BLOCK
 
 # ------------------------------------------------------------------
