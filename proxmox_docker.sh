@@ -45,10 +45,14 @@ first_ipv4(){ grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1; }
 
 detect_lxc_ip() {
   local raw ip
-  raw="$(pct exec "$CTID" -- bash -lc "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | head -n1" 2>/dev/null || true)"
+  raw="$(pct exec "$CTID" -- bash -lc \
+    "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | head -n1" \
+    2>/dev/null || true)"
   ip="$(printf '%s' "$raw" | strip_ansi | first_ipv4 || true)"
   if [[ -z "${ip}" ]]; then
-    raw="$(pct exec "$CTID" -- bash -lc "hostname -I | awk '{print \$1}'" 2>/dev/null || true)"
+    raw="$(pct exec "$CTID" -- bash -lc \
+      "hostname -I | awk '{print \$1}'" \
+      2>/dev/null || true)"
     ip="$(printf '%s' "$raw" | strip_ansi | first_ipv4 || true)"
   fi
   [[ -z "${ip}" ]] && ip="(unknown)"
@@ -79,7 +83,7 @@ msg_ok "Docker ready"
 
 if [[ "${ENABLE_MDNS}" == "1" ]]; then
   msg_info "Installing & configuring Avahi (mDNS: ${MDNS_BASE}.local)"
-  pct exec "$CTID" -- bash -lc '
+pct exec "$CTID" -- bash -lc '
     set -e
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
@@ -112,7 +116,7 @@ pct exec "$CTID" -- bash -lc "
   GIT_BRANCH='${GIT_BRANCH}'
   GIT_REPO='${GIT_REPO}'
   GITHUB_TOKEN='${GITHUB_TOKEN}'
-  
+
   if [[ -d \"${PROJECT_DIR}/.git\" ]]; then
     cd \"${PROJECT_DIR}\"
     git fetch --all
@@ -121,7 +125,9 @@ pct exec "$CTID" -- bash -lc "
   else
     rm -rf \"${PROJECT_DIR}\"
     if [[ -n \"${GITHUB_TOKEN}\" ]]; then
-      git clone --branch \"${GIT_BRANCH}\" \"https://x-access-token:${GITHUB_TOKEN}@github.com/EdmondStassen/Supervisory_relations_newsletter.git\" \"${PROJECT_DIR}\"
+      git clone --branch \"${GIT_BRANCH}\" \
+        \"https://x-access-token:${GITHUB_TOKEN}@github.com/EdmondStassen/Supervisory_relations_newsletter.git\" \
+        \"${PROJECT_DIR}\"
     else
       git clone --branch \"${GIT_BRANCH}\" \"${GIT_REPO}\" \"${PROJECT_DIR}\"
     fi
@@ -150,28 +156,36 @@ else
 fi
 
 msg_info "Starting docker compose"
-pct exec "$CTID" -- bash -lc "cd '${PROJECT_DIR}' && docker compose --env-file '${ENV_FILE}' up -d" >/dev/null
+pct exec "$CTID" -- bash -lc "
+  cd '${PROJECT_DIR}' && \
+  docker compose --env-file '${ENV_FILE}' up -d
+" >/dev/null
 msg_ok "news_fetch started"
 
 msg_info "Setting up cron for daily workflow (weekdays 07:45 update, 08:00 workflow)"
 pct exec "$CTID" -- bash -lc "
   set -e
   apt-get install -y cron
-  
+
   # Set timezone to Amsterdam
   ln -sf /usr/share/zoneinfo/Europe/Amsterdam /etc/localtime
   echo 'Europe/Amsterdam' > /etc/timezone
-  
+
   # Create cron jobs file
   cat > /etc/cron.d/news_fetch <<'CRONEOF'
 # Git pull + restart container (07:45 weekdays)
-45 7 * * 1-5 root cd ${PROJECT_DIR} && git pull >> ${PROJECT_DIR}/logs/git-update.log 2>&1 && docker compose --env-file ${ENV_FILE} restart >> ${PROJECT_DIR}/logs/git-update.log 2>&1
+45 7 * * 1-5 root cd ${PROJECT_DIR} \
+  && git pull >> ${PROJECT_DIR}/logs/git-update.log 2>&1 \
+  && docker compose --env-file ${ENV_FILE} restart \
+    >> ${PROJECT_DIR}/logs/git-update.log 2>&1
 
 # Run workflow (08:00 weekdays)
-0 8 * * 1-5 root cd ${PROJECT_DIR} && docker compose --env-file ${ENV_FILE} exec -T news_fetch python run_workflow.py >> ${PROJECT_DIR}/logs/cron.log 2>&1
+0 8 * * 1-5 root cd ${PROJECT_DIR} \
+  && docker compose --env-file ${ENV_FILE} exec -T news_fetch \
+    python run_workflow.py >> ${PROJECT_DIR}/logs/cron.log 2>&1
 CRONEOF
   chmod 0644 /etc/cron.d/news_fetch
-  
+
   # Ensure cron is enabled and running
   systemctl enable cron --now
 " >/dev/null
@@ -243,4 +257,3 @@ if [[ "${ENABLE_MDNS}" == "1" ]]; then
 fi
 echo -e "${INFO}${YW}LXC root password:${CL} ${ROOT_PASS}"
 echo -e "${INFO}${YW}Configuration stored in Proxmox Notes${CL}"
-
