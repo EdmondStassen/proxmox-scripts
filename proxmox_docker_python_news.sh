@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 # Proxmox LXC: news_fetch via Docker Compose
 # - Pull (optionally private) GitHub repo
@@ -7,24 +7,48 @@ set -euo pipefail
 # - Avahi mDNS: news.local
 # - Proxmox Notes with URLs + paths
 
-# --- Pre-flight: make failures visible early ---
+# -------------------------
+# BEGIN: startup hardening
+# -------------------------
 echo "[INFO] Starting Proxmox installer: news_fetch-docker"
 
-# Log host-side output so you can review failures later
-HOST_LOG="/var/log/news_fetch_proxmox_install.log"
-touch "$HOST_LOG" 2>/dev/null || HOST_LOG="/tmp/news_fetch_proxmox_install.log"
-echo "[INFO] Host log: $HOST_LOG" | tee -a "$HOST_LOG"
-
-# Ensure we can fetch the helper library (build.func) reliably
-BUILD_FUNC_URL="https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func"
-BUILD_FUNC_PATH="/tmp/build.func"
-if ! curl -fSL "$BUILD_FUNC_URL" -o "$BUILD_FUNC_PATH" >>"$HOST_LOG" 2>&1; then
-  echo "[ERROR] Failed to download build.func from: $BUILD_FUNC_URL" | tee -a "$HOST_LOG"
-  echo "[ERROR] Check DNS/Internet from the Proxmox host (raw.githubusercontent.com)." | tee -a "$HOST_LOG"
+# Basic host sanity checks (fail fast with a clear message)
+if ! command -v pct >/dev/null 2>&1; then
+  echo "[ERROR] 'pct' not found. This script must be run on the Proxmox host shell."
   exit 1
 fi
+if ! command -v curl >/dev/null 2>&1; then
+  echo "[ERROR] 'curl' not found on host. Install it: apt-get update && apt-get install -y curl"
+  exit 1
+fi
+
+# Host-side log: mirror ALL output to screen AND file (fixes "web shell goes white" / no output)
+HOST_LOG="/var/log/news_fetch_proxmox_install.log"
+touch "$HOST_LOG" 2>/dev/null || HOST_LOG="/tmp/news_fetch_proxmox_install.log"
+echo "[INFO] Host log: $HOST_LOG"
+exec > >(tee -a "$HOST_LOG") 2>&1
+
+# Helpful error handler: show line + last command
+on_err() {
+  local exit_code=$?
+  echo "[ERROR] Script failed (exit=$exit_code) at line $1 while running: ${BASH_COMMAND}"
+  echo "[ERROR] See log: $HOST_LOG"
+  exit "$exit_code"
+}
+trap 'on_err $LINENO' ERR
+trap 'echo "[WARN] Interrupted (Ctrl-C). See log: $HOST_LOG"; exit 130' INT
+
+# Fetch helper library (build.func) with timeouts so it doesn't "hang at the beginning"
+BUILD_FUNC_URL="https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func"
+BUILD_FUNC_PATH="/tmp/build.func"
+echo "[INFO] Downloading build.func..."
+curl --connect-timeout 10 --max-time 60 -fSL "$BUILD_FUNC_URL" -o "$BUILD_FUNC_PATH"
 # shellcheck source=/tmp/build.func
 source "$BUILD_FUNC_PATH"
+echo "[INFO] build.func loaded."
+# -------------------------
+# END: startup hardening
+# -------------------------
 
 APP="news_fetch-docker"
 var_tags="${var_tags:-docker;news_fetch;newsletter}"
@@ -36,7 +60,10 @@ var_version="${var_version:-13}"
 var_unprivileged="${var_unprivileged:-1}"
 var_hostname="${var_hostname:-news}"
 
+# NOTE: Your compose seems to publish 5678 (seen via docker-proxy), but keep 8080 default.
+# Override at runtime: HOST_PORT=5678 ./script.sh
 HOST_PORT="${HOST_PORT:-8080}"
+
 MDNS_BASE="${MDNS_BASE:-${var_hostname}}"
 ENABLE_MDNS="${ENABLE_MDNS:-1}"
 
@@ -45,6 +72,7 @@ GIT_BRANCH="${GIT_BRANCH:-main}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 PROJECT_DIR="/opt/news_fetch"
 ENV_FILE="${PROJECT_DIR}/.env"
+
 SMTP_PASSWORD="${SMTP_PASSWORD:-}"
 AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-}"
 AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-}"
@@ -61,9 +89,9 @@ pct_exec_logged() {
   # Usage: pct_exec_logged "<bash -lc command string>" ["label"]
   local cmd="${1:?missing command}"
   local label="${2:-pct exec}"
-  echo "[INFO] ${label}" >>"$HOST_LOG"
-  # Let errors bubble up (set -e), but keep the full output in HOST_LOG.
-  pct exec "$CTID" -- bash -lc "$cmd" >>"$HOST_LOG" 2>&1
+  msg_info "$label"
+  pct exec "$CTID" -- bash -lc "$cmd"
+  msg_ok "$label"
 }
 
 detect_lxc_ip() {
@@ -86,7 +114,6 @@ start
 build_container
 description
 
-msg_info "Installing Docker + Compose plugin (self-managed)"
 pct_exec_logged '
   set -e
   export DEBIAN_FRONTEND=noninteractive
@@ -100,21 +127,17 @@ pct_exec_logged '
   docker --version
   docker compose version
 ' "Install Docker + Compose"
-msg_ok "Docker ready"
 
-# Optional: SSH for the "ssh root@IP" note
-msg_info "Installing SSH server (for ssh root@<IP>)"
+# SSH so "ssh root@<IP>" works
 pct_exec_logged '
   set -e
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get install -y openssh-server
   systemctl enable ssh --now || systemctl enable sshd --now || true
-' "Install openssh-server"
-msg_ok "SSH ready"
+' "Install SSH server"
 
 if [[ "${ENABLE_MDNS}" == "1" ]]; then
-  msg_info "Installing & configuring Avahi (mDNS: ${MDNS_BASE}.local)"
   pct_exec_logged '
     set -e
     export DEBIAN_FRONTEND=noninteractive
@@ -134,14 +157,10 @@ if [[ "${ENABLE_MDNS}" == "1" ]]; then
     fi
     systemctl restart avahi-daemon
   " "Configure mDNS hostname"
-  msg_ok "mDNS configured"
 fi
 
-msg_info "Setting container root password"
-pct_exec_logged "echo root:${ROOT_PASS} | chpasswd" "Set root password"
-msg_ok "Root password set"
+pct_exec_logged "echo root:${ROOT_PASS} | chpasswd" "Set container root password"
 
-msg_info "Cloning/updating repository"
 pct_exec_logged "
   set -e
   PROJECT_DIR='${PROJECT_DIR}'
@@ -157,27 +176,19 @@ pct_exec_logged "
   else
     rm -rf \"\${PROJECT_DIR}\"
     if [[ -n \"\${GITHUB_TOKEN}\" ]]; then
+      # Keep your original repo default but allow token-based clone
       git clone --branch \"\${GIT_BRANCH}\" \"https://x-access-token:\${GITHUB_TOKEN}@github.com/EdmondStassen/Supervisory_relations_newsletter.git\" \"\${PROJECT_DIR}\"
     else
       git clone --branch \"\${GIT_BRANCH}\" \"\${GIT_REPO}\" \"\${PROJECT_DIR}\"
     fi
   fi
-" "Git clone/pull"
-msg_ok "Repository ready"
+" "Git clone/pull repo"
 
-msg_info "Preparing project directories"
+pct_exec_logged "mkdir -p '${PROJECT_DIR}/logs'" "Create logs directory"
+
+# Write .env (back up any existing file first)
 pct_exec_logged "
   set -e
-  mkdir -p '${PROJECT_DIR}/logs'
-" "Create logs dir"
-msg_ok "Directories ready"
-
-msg_info "Writing .env (secrets only)"
-# Keep close to your current approach: write the three keys into .env.
-# But also back up any existing .env so secrets don't disappear accidentally.
-pct_exec_logged "
-  set -e
-  mkdir -p '${PROJECT_DIR}'
   if [[ -f '${ENV_FILE}' ]]; then
     cp -f '${ENV_FILE}' '${ENV_FILE}.bak.$(date +%Y%m%d%H%M%S)' || true
   fi
@@ -188,60 +199,47 @@ AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
 EOF
   chmod 0600 '${ENV_FILE}' || true
 " "Write .env"
-if [[ -z "${SMTP_PASSWORD}" ]] || [[ -z "${AWS_ACCESS_KEY_ID}" ]] || [[ -z "${AWS_SECRET_ACCESS_KEY}" ]]; then
-  msg_info "Some secrets are empty - set these env vars before running for full functionality:"
-  msg_info "  SMTP_PASSWORD"
-  msg_info "  AWS_ACCESS_KEY_ID"
-  msg_info "  AWS_SECRET_ACCESS_KEY"
-else
-  msg_ok ".env written with all secrets"
-fi
 
 msg_info "Starting docker compose"
-pct_exec_logged "cd '${PROJECT_DIR}' && docker compose --env-file '${ENV_FILE}' up -d" "docker compose up -d"
-msg_ok "news_fetch started"
+pct exec "$CTID" -- bash -lc "cd '${PROJECT_DIR}' && docker compose --env-file '${ENV_FILE}' up -d"
+msg_ok "docker compose up -d"
 
-msg_info "Verifying containers (docker compose ps + last logs)"
-# Show a small summary to the console; full logs go to HOST_LOG.
-pct exec "$CTID" -- bash -lc "cd '${PROJECT_DIR}' && docker compose --env-file '${ENV_FILE}' ps" 2>&1 | tee -a "$HOST_LOG" || true
-pct exec "$CTID" -- bash -lc "cd '${PROJECT_DIR}' && docker compose --env-file '${ENV_FILE}' logs --tail=80" 2>&1 | tee -a "$HOST_LOG" || true
-msg_ok "Verification done (see host log for details)"
+msg_info "docker compose ps (verification)"
+pct exec "$CTID" -- bash -lc "cd '${PROJECT_DIR}' && docker compose --env-file '${ENV_FILE}' ps"
+msg_ok "docker compose ps"
 
-msg_info "Setting up cron for daily workflow (weekdays 07:45 update, 08:00 workflow)"
+msg_info "docker compose logs (last 80 lines)"
+pct exec "$CTID" -- bash -lc "cd '${PROJECT_DIR}' && docker compose --env-file '${ENV_FILE}' logs --tail=80" || true
+msg_ok "docker compose logs captured"
+
+# Cron: IMPORTANT fix — do NOT single-quote heredoc marker, so variables expand into hard paths
 pct_exec_logged "
   set -e
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get install -y cron
 
-  # Set timezone to Amsterdam
   ln -sf /usr/share/zoneinfo/Europe/Amsterdam /etc/localtime
   echo 'Europe/Amsterdam' > /etc/timezone
 
-  # Ensure logs directory exists
   mkdir -p '${PROJECT_DIR}/logs'
 
-  # Create cron jobs file (IMPORTANT: variables are expanded here on purpose)
   cat > /etc/cron.d/news_fetch <<CRONEOF
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# Git pull + restart container (07:45 weekdays)
 45 7 * * 1-5 root cd ${PROJECT_DIR} && git pull >> ${PROJECT_DIR}/logs/git-update.log 2>&1 && docker compose --env-file ${ENV_FILE} restart >> ${PROJECT_DIR}/logs/git-update.log 2>&1
-
-# Run workflow (08:00 weekdays)
 0 8 * * 1-5 root cd ${PROJECT_DIR} && docker compose --env-file ${ENV_FILE} exec -T news_fetch python run_workflow.py >> ${PROJECT_DIR}/logs/cron.log 2>&1
 CRONEOF
 
   chmod 0644 /etc/cron.d/news_fetch
-
-  # Ensure cron is enabled and running
   systemctl enable cron --now
 " "Configure cron"
-msg_ok "Cron configured (07:45 git pull, 08:00 workflow)"
 
-msg_info "Detecting IP and writing Proxmox Notes"
+msg_info "Detecting container IP"
 LXC_IP="$(detect_lxc_ip)"
+msg_ok "Container IP: ${LXC_IP}"
+
 URL_IP="http://${LXC_IP}:${HOST_PORT}"
 URL_DNS="http://${MDNS_BASE}.local:${HOST_PORT}"
 
@@ -269,43 +267,25 @@ Paths:
 - Logs: ${PROJECT_DIR}/logs
 - Host install log: ${HOST_LOG}
 
-Commands:
-- docker compose -f ${PROJECT_DIR}/docker-compose.yml --env-file ${ENV_FILE} up -d
-- docker compose -f ${PROJECT_DIR}/docker-compose.yml --env-file ${ENV_FILE} ps
-- docker compose -f ${PROJECT_DIR}/docker-compose.yml --env-file ${ENV_FILE} logs -f
-
-Workflow Commands:
-- python run_workflow.py (full workflow)
-- python run_workflow_test.py (test with TEST_EMAIL)
-- python stap0_environment.py (check/restore from S3)
-
-Cron Schedule:
-- 07:45 Mon-Fri: Git pull + container restart (logs/git-update.log)
-- 08:00 Mon-Fri: Run workflow (logs/cron.log)
-- Timezone: Amsterdam (Europe/Amsterdam)
-- Check: cat /etc/cron.d/news_fetch
-
-Environment Variables Provided to Installer:
-- GITHUB_TOKEN: ${GITHUB_TOKEN}
-- SMTP_PASSWORD: ${SMTP_PASSWORD}
-- AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-- AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
-
 Secrets:
 - LXC root password: ${ROOT_PASS}
 
 To Enter Container:
 - ssh root@${LXC_IP}
+
+Debug:
+- On host: tail -f ${HOST_LOG}
+- In CT: cd ${PROJECT_DIR} && docker compose --env-file ${ENV_FILE} ps
+- In CT: cd ${PROJECT_DIR} && docker compose --env-file ${ENV_FILE} logs -f
 EOF
 )"
-pct set "$CTID" --description "$DESC" >>"$HOST_LOG" 2>&1 || true
+pct set "$CTID" --description "$DESC" >/dev/null 2>&1 || true
 msg_ok "Notes written"
 
 msg_ok "Completed successfully!"
-echo -e "${INFO}${YW}Access (IP):${CL} ${URL_IP}"
+echo "[INFO] Access (IP): ${URL_IP}"
 if [[ "${ENABLE_MDNS}" == "1" ]]; then
-  echo -e "${INFO}${YW}Access (mDNS):${CL} ${URL_DNS}"
+  echo "[INFO] Access (mDNS): ${URL_DNS}"
 fi
-echo -e "${INFO}${YW}LXC root password:${CL} ${ROOT_PASS}"
-echo -e "${INFO}${YW}Host log:${CL} ${HOST_LOG}"
-echo -e "${INFO}${YW}Configuration stored in Proxmox Notes${CL}"
+echo "[INFO] LXC root password: ${ROOT_PASS}"
+echo "[INFO] Host log: ${HOST_LOG}"
