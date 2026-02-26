@@ -10,6 +10,9 @@ set -Eeuo pipefail
 # Workaround for SSH_CLIENT unbound variable
 export SSH_CLIENT="${SSH_CLIENT:-}"
 
+# Override FUNCTIONS_FILE_PATH to use our own install script
+export FUNCTIONS_FILE_PATH="$(curl -fsSL https://raw.githubusercontent.com/EdmondStassen/proxmox-scripts/main/install/news-fetch-install.sh)"
+
 # Load community-scripts helpers
 source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
 
@@ -22,6 +25,9 @@ var_disk="${var_disk:-10}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_unprivileged="${var_unprivileged:-1}"
+
+# Custom var_install to point to our own script
+var_install="news-fetch-install"
 
 # Initialize build environment
 header_info "$APP"
