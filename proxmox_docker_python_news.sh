@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # Proxmox LXC: news_fetch via Docker Compose
 # - Pull private GitHub repo
 # - Run docker compose
