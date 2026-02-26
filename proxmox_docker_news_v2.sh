@@ -34,12 +34,8 @@ trap 'on_err $LINENO' ERR
 trap 'echo "[WARN] Interrupted (Ctrl-C). See log: '"$HOST_LOG"'"; exit 130' INT
 
 # Load helper functions (community-scripts build.func)
-BUILD_FUNC_URL="${BUILD_FUNC_URL:-https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func}"
-BUILD_FUNC_PATH="/tmp/build.func"
 echo "[INFO] Downloading build.func..."
-curl --connect-timeout 10 --max-time 60 -fSL "$BUILD_FUNC_URL" -o "$BUILD_FUNC_PATH"
-# shellcheck source=/tmp/build.func
-source "$BUILD_FUNC_PATH"
+source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
 echo "[INFO] build.func loaded."
 
 # -------------------------
