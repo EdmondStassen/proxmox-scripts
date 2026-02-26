@@ -7,6 +7,9 @@ set -Eeuo pipefail
 # Source: https://github.com/EdmondStassen/proxmox-scripts
 # Proxmox Installer for news_fetch Docker LXC Container
 
+# Workaround for SSH_CLIENT unbound variable
+export SSH_CLIENT="${SSH_CLIENT:-}"
+
 # Load community-scripts helpers
 source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
 
