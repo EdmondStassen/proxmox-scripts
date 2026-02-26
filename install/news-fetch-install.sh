@@ -64,20 +64,24 @@ PROJECT_DIR="/opt/news_fetch"
 msg_info "Cloning repository"
 if [[ -d "$PROJECT_DIR/.git" ]]; then
   cd "$PROJECT_DIR"
-  $STD git fetch --all
-  $STD git checkout "$GIT_BRANCH"
-  $STD git pull
+  msg_info "Repository exists, fetching updates"
+  git fetch --all
+  git checkout "$GIT_BRANCH"
+  git pull
+  msg_ok "Repository updated"
 else
   rm -rf "$PROJECT_DIR"
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    $STD git clone --branch "$GIT_BRANCH" \
+    msg_info "Cloning with GitHub token"
+    git clone --branch "$GIT_BRANCH" \
       "https://x-access-token:${GITHUB_TOKEN}@github.com/EdmondStassen/Supervisory_relations_newsletter.git" \
       "$PROJECT_DIR"
   else
-    $STD git clone --branch "$GIT_BRANCH" "$GIT_REPO" "$PROJECT_DIR"
+    msg_info "Cloning from public repository"
+    git clone --branch "$GIT_BRANCH" "$GIT_REPO" "$PROJECT_DIR"
   fi
+  msg_ok "Repository cloned"
 fi
-msg_ok "Repository cloned"
 
 msg_info "Creating project directories"
 mkdir -p "$PROJECT_DIR/logs"
