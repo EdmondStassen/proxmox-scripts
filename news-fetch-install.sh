@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
+set -Eeuo pipefail
 
 # Copyright (c) 2021-2026 community-scripts
 # Author: Edmond Stassen
 # License: MIT
 # Source: https://github.com/EdmondStassen/proxmox-scripts
+# Proxmox Installer for news_fetch Docker LXC Container
 
+# Load community-scripts helpers
 source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
-# Copyright (c) 2021-2026 community-scripts
-# Author: Edmond Stassen
-# License: MIT
-# Source: https://github.com/EdmondStassen/proxmox-scripts
 
+# Application configuration
 APP="news-fetch"
 var_tags="${var_tags:-docker;newsletter;news_fetch}"
 var_cpu="${var_cpu:-2}"
@@ -20,25 +20,27 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-13}"
 var_unprivileged="${var_unprivileged:-1}"
 
+# Initialize build environment
 header_info "$APP"
 variables
 color
 catch_errors
 
-function update_script() {
+# Update script for inside LXC container
+update_script() {
   header_info
   check_container_storage
   check_container_resources
-  
+
   msg_info "Updating Container OS"
   $STD apt-get update
   $STD apt-get -y upgrade
   msg_ok "Updated Container OS"
-  
+
   msg_info "Updating Docker"
   $STD apt-get install --only-upgrade -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
   msg_ok "Updated Docker"
-  
+
   PROJECT_DIR="/opt/news_fetch"
   if [[ -d "$PROJECT_DIR" ]]; then
     msg_info "Updating news_fetch repository"
@@ -48,11 +50,12 @@ function update_script() {
     $STD docker compose up -d
     msg_ok "Updated news_fetch"
   fi
-  
+
   msg_ok "Update completed"
   exit
 }
 
+# Start installation
 start
 build_container
 description
